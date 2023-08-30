@@ -74,7 +74,7 @@ def get_conversation_chain_rag(vectorstore):
     qa_chain = ConversationalRetrievalChain.from_llm(llm=llm, retriever=retriever)
     return qa_chain
 
-def similarity_search(question,filter=[{"query":"Men", "path": "gender"}],k=25):
+def similarity_search(question,filter=[{"text":{"query":"Men", "path": "gender"}}],k=25):
     collection = client['search']['catalog_final_myn']
     query_vector = get_openai_emb_transformers().embed_query(question)
     knnBeta = {
@@ -86,7 +86,7 @@ def similarity_search(question,filter=[{"query":"Men", "path": "gender"}],k=25):
         compound = {}
         compound["must"] = []
         for fil in filter:
-            compound["must"]  += [{"text":fil}]
+            compound["must"]  += [fil]
         knnBeta["filter"] = {"compound": compound}
     pipeline = [{
     "$search": {
