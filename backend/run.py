@@ -3,24 +3,20 @@ import json
 import time
 from dotenv import load_dotenv
 from flask_cors import CORS
-from kafka import KafkaConsumer, KafkaProducer
+from kafka import KafkaProducer
 from pymongo import MongoClient
 import langchain
 
 import getpass
 from langchain.llms import OpenAI
 from langchain.chat_models import ChatOpenAI
-# from langchain.memory import ConversationEntityMemory,ConversationBufferMemory
-from langchain.docstore.document import Document
-from langchain.embeddings.huggingface import HuggingFaceEmbeddings
 from langchain.embeddings.openai import OpenAIEmbeddings
 from langchain.vectorstores import MongoDBAtlasVectorSearch
-from langchain.chains import RetrievalQA, ConversationalRetrievalChain, ConversationChain,LLMChain
-from langchain.chains.conversation.prompt import ENTITY_MEMORY_CONVERSATION_TEMPLATE
+from langchain.chains import  ConversationalRetrievalChain, ConversationChain,LLMChain
 from langchain import PromptTemplate
 
-from langchain.memory.entity import InMemoryEntityStore
 from functools import lru_cache
+import certifi
 
 import os
 import numpy as np
@@ -32,7 +28,7 @@ template='You are an assistant to a human, powered by a large language model tra
 app = Flask(__name__)
 app.config['SESSION_TYPE'] = 'memcached'
 app.config['SECRET_KEY'] = 'super secret key'
-client = MongoClient(os.getenv("MDB_CONNECTION_STR"))
+client = MongoClient(os.getenv("MDB_CONNECTION_STR"), tlsCAFile=certifi.where())
 db = client["search"]
 col = client['sample']['kafkatest']
 
@@ -40,14 +36,6 @@ col = client['sample']['kafkatest']
 def get_openai_emb_transformers():
     embeddings = OpenAIEmbeddings()
     return embeddings
-
-def get_emb_trnsformers():
-    emb_model = "sentence-transformers/all-MiniLM-L6-v2"
-    embeddings_w = HuggingFaceEmbeddings(
-        model_name=emb_model,
-        cache_folder=os.getenv('SENTENCE_TRANSFORMERS_HOME')
-    )
-    return embeddings_w
 
 @lru_cache
 def get_vector_store():
@@ -74,6 +62,12 @@ def get_conversation_chain_rag(vectorstore):
     qa_chain = ConversationalRetrievalChain.from_llm(llm=llm, retriever=retriever)
     return qa_chain
 
+@lru_cache
+def get_conversation_chain_conv():
+    llm = ChatOpenAI(model='gpt-3.5-turbo', temperature=0.7)
+    chain = ConversationChain(llm=llm)
+    return chain
+
 def similarity_search(question,filter=[{"text":{"query":"Men", "path": "gender"}}],k=25):
     collection = client['search']['catalog_final_myn']
     query_vector = get_openai_emb_transformers().embed_query(question)
@@ -87,6 +81,7 @@ def similarity_search(question,filter=[{"text":{"query":"Men", "path": "gender"}
         compound["must"] = []
         for fil in filter:
             compound["must"]  += [fil]
+        knnBeta["filter"] = {"compound": compound}
         knnBeta["filter"] = {"compound": compound}
     pipeline = [{
     "$search": {
@@ -153,7 +148,14 @@ def kafkaProducer():
 def get_similar():
     req = request.get_json()
     q = req["query"]
-    return jsonify(similarity_search(q))
+    return jsonify(similarity_search(q,filter=[]))
+
+def parse_query(val):
+    op = ""
+    for i,ele in enumerate(val.split("\n")[1:-1]):
+        if ele !="":
+            op += " "+ele.replace(str(i)+".","").strip()
+    return op
 
 @app.route('/qna', methods=['GET','POST'])
 def get_qna():
@@ -179,11 +181,20 @@ def get_qna():
     op["history"] = session[mem_key+"_chat_history"]
 
     # Ecomm query generator for recommendations
-    prompt = f"IF there is a intent in the below context return items that match \n ##Context: {resp} \n ##Instruction: Generate Search Query to use in Search engine containing Fashion clother and accessories with try to decipher the gender and brand preference from the context and use it \n ## Generate Search Query: "
-    query = get_conversation_chain_rag(get_vector_store()).run({"question":prompt, "chat_history":session[mem_key+"_chat_history"]})
-    products = similarity_search(query)
-    op["recommendations"] = products
-    op["product_query"] = query
+    prompt = f"Identify the top keywords related to fashion e-commerce that will drive the most relevant traffic to our website and increase search engine visibility. Gather data on search volume, competition, and related keywords. The keywords should be relevant to our target audience and align with our content marketing strategy. Pick the keywords from the context below \n ##Context: {resp}"
+    # prompt = f"IF there is a intent in the below context return items that match \n ##Context: {resp} \n ##Instruction: Generate Search Query to use in Search engine containing Fashion clother and accessories with try to decipher the gender and brand preference from the context and use it \n ## Generate Search Query: "
+    query = get_conversation_chain_conv().predict(input=prompt) ##.run({"question":prompt, "chat_history":session[mem_key+"_chat_history"]})
+    
+    check_query_prompt = f"Given the response from the LLM from previous stage. Can we use this reponse to query The search engine. Answer with Yes or No only \n ##Context: {query}"
+    check = get_conversation_chain_conv().predict(input=check_query_prompt)
+    print(check)
+    query = parse_query(query)
+    if "YES" in check.upper():
+        products = similarity_search(query)
+        op["recommendations"] = products
+        op["product_query"] = query
+    else:
+        op["product_query"] = query
     return jsonify(op)
 
 @app.route('/clear/session', methods=['DELETE'])
