@@ -68,7 +68,7 @@ def get_conversation_chain_conv():
     chain = ConversationChain(llm=llm)
     return chain
 
-def similarity_search(question,filter=[{"text":{"query":"Men", "path": "gender"}}],k=25):
+def similarity_search(question,filter=[{"text":{"query":"Men", "path": "gender"}}],k=150):
     collection = client['search']['catalog_final_myn']
     query_vector = get_openai_emb_transformers().embed_query(question)
     knnBeta = {
@@ -99,18 +99,19 @@ def similarity_search(question,filter=[{"text":{"query":"Men", "path": "gender"}
           "$gt":0.8
       }
     }},
-    {"$project":{
-      "_id": 0,
-      "id": 1,
-      "title":1,
-      "price":1,
-      "atp": 1,
-      "baseColour":1,
-      "gender":1,
-      "mfg_brand_name":1,
-      "link":1,
-      "score":1
-    }}]
+    {"$group":{
+        "_id": "$title",
+        "id": {"$first": "$title"},
+        "title": {"$first": "$title"},
+        "price": {"$first": "$price"},
+        "atp": {"$first": "$atp"},
+        "baseColour": {"$addToSet": "$baseColour"},
+        "gender": {"$addToSet": "$gender"},
+        "mfg_brand_name": {"$first": "$mfg_brand_name"},
+        "link": {"$addToSet": "$link"},
+        "score": {"$avg": "$score"}
+    }},
+    {"$project":{"_id": 0}}]
     res = list(collection.aggregate(pipeline))
     return res
 
@@ -220,7 +221,7 @@ def get_qna():
     # initiate conversaiton
     if len(session[mem_key+"_chat_history"]) < 1 or len(session[mem_key+"_chat_history"])==4:
         resp = get_conversation_chain_rag(get_vector_store()).run({"question":f"Greetings!!! I am {name} and I am {gender} and live in {address}", "chat_history":session[mem_key+"_chat_history"], "gender": gender})
-        session[mem_key+"_chat_history"] += [(f"Greetings!!! I am {name} and I am {gender} and live in {address}", resp)]
+        session[mem_key+"_chat_history"] += [(f"Greetings!!! I am {name} and I am looking for {gender}s products to purchase and live in {address}", resp)]
     # conversation handler
     resp = get_conversation_chain_rag(get_vector_store()).run({"question":question, "chat_history":session[mem_key+"_chat_history"], "gender": gender})
     op = {}
