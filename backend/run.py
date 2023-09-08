@@ -98,7 +98,7 @@ def similarity_search(question,filter=[{"text":{"query":"Men", "path": "gender"}
       "score":{
           "$gt":0.8
       }
-    }},
+    }}
     {"$project":{
       "_id": 0,
       "id": 1,
@@ -152,11 +152,19 @@ def get_similar():
 
 def parse_query(val):
     op = ""
-    for i,ele in enumerate(val.split("\n")[1:-1]):
-        if ele !="":
-            op += " "+ele.replace(str(i)+".","").strip()
-    return op
-
+    foo = []
+    if len(val.split("\n")[1:-1])>1:
+        foo = val.split("\n")[1:-1]
+    elif len(val.split(",")[1:-1])>1:
+        foo = val.split(",")[1:-1]
+    if len(foo)>0:
+        for i,ele in enumerate(foo):
+            if ele !="":
+                op += " "+ele.replace(str(i)+".","").strip()
+        return op
+    else:
+        return val
+    
 @app.route('/qna', methods=['GET','POST'])
 def get_qna():
     req = request.get_json()
@@ -172,6 +180,11 @@ def get_qna():
         session[mem_key+"_chat_history"] = []
     else:
         print("Using the following memory key", mem_key)
+
+    
+    # restric history to last three messages
+    if len(session[mem_key+"_chat_history"])>3:
+        session[mem_key+"_chat_history"] = session[mem_key+"_chat_history"][-3:]
     
     # conversation handler
     resp = get_conversation_chain_rag(get_vector_store()).run({"question":question, "chat_history":session[mem_key+"_chat_history"]})
@@ -182,15 +195,13 @@ def get_qna():
 
     # Ecomm query generator for recommendations
     prompt = f"Identify the top keywords related to fashion e-commerce that will drive the most relevant traffic to our website and increase search engine visibility. Gather data on search volume, competition, and related keywords. The keywords should be relevant to our target audience and align with our content marketing strategy. Pick the keywords from the context below \n ##Context: {resp}"
-    # prompt = f"IF there is a intent in the below context return items that match \n ##Context: {resp} \n ##Instruction: Generate Search Query to use in Search engine containing Fashion clother and accessories with try to decipher the gender and brand preference from the context and use it \n ## Generate Search Query: "
     query = get_conversation_chain_conv().predict(input=prompt) ##.run({"question":prompt, "chat_history":session[mem_key+"_chat_history"]})
     
     check_query_prompt = f"Given the response from the LLM from previous stage. Can we use this reponse to query The search engine. Answer with Yes or No only \n ##Context: {query}"
     check = get_conversation_chain_conv().predict(input=check_query_prompt)
-    print(check)
     query = parse_query(query)
     if "YES" in check.upper():
-        products = similarity_search(query)
+        products = similarity_search(query,filter=[])
         op["recommendations"] = products
         op["product_query"] = query
     else:
