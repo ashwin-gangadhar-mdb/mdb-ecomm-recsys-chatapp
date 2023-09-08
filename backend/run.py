@@ -23,7 +23,7 @@ import numpy as np
 from pathlib import Path
 
 
-template='You are an assistant to a human, powered by a large language model trained by OpenAI.\n\nYou are designed to be able to assist with a wide range of fashion apparel, beauty products, fashion accessories and casual wear dresses, from answering simple questions to providing in-depth explanations and product recommendation to occassion , theme and situation on a wide range of product categories. As a language model, you are able to generate human-like text based on the input you receive, allowing you to engage in natural-sounding conversations and provide responses that are coherent and relevant to the topic at hand.\n\nYou are constantly learning and improving, and your capabilities are constantly evolving. You are able to process and understand large amounts of text, and can use this knowledge to provide accurate and informative responses to a wide range of questions. You have access to some personalized information provided by the human in the Context section below. Additionally, you are able to generate your own text based on the input you receive, allowing you to engage in discussions and provide explanations and descriptions on a wide range of topics.\n\nOverall, you are a powerful tool that can help with a wide range of tasks on this fashion ecommerce website and provide valuable insights and information on a wide range of product categories. Whether the human needs help with a specific question or just wants to have a conversation about a particular product/inventory, you are here to assist.\n\nContext:\nMyntra Products and Categories\n\nCurrent conversation:\n{chat_history}\nLast line:\nHuman: {question}\nYou:'
+template='You are an assistant to a human, powered by a large language model trained by OpenAI.\n\nYou are designed to be able to assist with a wide range of fashion clothes, beauty products, fashion accessories and casual wear dresses, from answering simple questions to providing in-depth explanations and product recommendation to occassion , theme and situation on a wide range of product categories. As a language model, you are able to generate human-like text based on the input you receive, allowing you to engage in natural-sounding conversations and provide responses that are coherent and relevant to the topic at hand.\n\nYou are constantly learning and improving, and your capabilities are constantly evolving. You are able to process and understand large amounts of text, and can use this knowledge to provide accurate and informative responses to a wide range of questions. You have access to some personalized information provided by the human in the Context section below. Additionally, you are able to generate your own text based on the input you receive, allowing you to engage in discussions and provide explanations and descriptions on a wide range of topics.\n\nOverall, you are a powerful tool that can help with a wide range of tasks on this fashion ecommerce website and provide valuable insights and information on a wide range of product categories. When asked to purchase product instruct use to engage with the cards to make a purchase. Whether the human needs help with a specific question or just wants to have a conversation about a particular product/inventory, you are here to assist and recommend products.\n\nContext:\nMyntra Products and Categories\n\nCurrent conversation:\n{chat_history}\nLast line:\nHuman: {question}\nYou:'
 
 app = Flask(__name__)
 app.config['SESSION_TYPE'] = 'memcached'
@@ -98,7 +98,7 @@ def similarity_search(question,filter=[{"text":{"query":"Men", "path": "gender"}
       "score":{
           "$gt":0.8
       }
-    }}
+    }},
     {"$project":{
       "_id": 0,
       "id": 1,
@@ -194,7 +194,7 @@ def get_qna():
     op["history"] = session[mem_key+"_chat_history"]
 
     # Ecomm query generator for recommendations
-    prompt = f"Identify the top keywords related to fashion e-commerce that will drive the most relevant traffic to our website and increase search engine visibility. Gather data on search volume, competition, and related keywords. The keywords should be relevant to our target audience and align with our content marketing strategy. Pick the keywords from the context below \n ##Context: {resp}"
+    prompt = f"Identify the top keywords related to fashion e-commerce that will drive the most relevant traffic to our website and increase search engine visibility. Gather data on search volume, competition, and related keywords. The keywords should be relevant to our target audience and align with our content marketing strategy. Give SEO or product queries only as output not descriptive suggestion on products. Pick the keywords from the context below and give only 5 search queries as output \n ##Context: {resp}"
     query = get_conversation_chain_conv().predict(input=prompt) ##.run({"question":prompt, "chat_history":session[mem_key+"_chat_history"]})
     
     check_query_prompt = f"Given the response from the LLM from previous stage. Can we use this reponse to query The search engine. Answer with Yes or No only \n ##Context: {query}"
