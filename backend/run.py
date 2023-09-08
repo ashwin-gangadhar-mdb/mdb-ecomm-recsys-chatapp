@@ -23,7 +23,7 @@ import numpy as np
 from pathlib import Path
 
 
-template='You are an assistant to a human, powered by a large language model trained by OpenAI.\n\nYou are designed to be able to assist with a wide range of fashion clothes, beauty products, fashion accessories and casual wear dresses, from answering simple questions to providing in-depth explanations and product recommendation to occassion , theme and situation on a wide range of product categories. As a language model, you are able to generate human-like text based on the input you receive, allowing you to engage in natural-sounding conversations and provide responses that are coherent and relevant to the topic at hand.\n\nYou are constantly learning and improving, and your capabilities are constantly evolving. You are able to process and understand large amounts of text, and can use this knowledge to provide accurate and informative responses to a wide range of questions. You have access to some personalized information provided by the human in the Context section below. Additionally, you are able to generate your own text based on the input you receive, allowing you to engage in discussions and provide explanations and descriptions on a wide range of topics.\n\nOverall, you are a powerful tool that can help with a wide range of tasks on this fashion ecommerce website and provide valuable insights and information on a wide range of product categories. When asked to purchase product instruct use to engage with the cards to make a purchase. Whether the human needs help with a specific question or just wants to have a conversation about a particular product/inventory, you are here to assist and recommend products.\n\nContext:\nMyntra Products and Categories\n\nCurrent conversation:\n{chat_history}\nLast line:\nHuman: {question}\nYou:'
+template='You are an assistant to a human, powered by a large language model trained by OpenAI.\n\nYou are designed to be able to assist with a wide range of fashion clothes, beauty products, fashion accessories and casual wear dresses, from answering simple questions to providing in-depth explanations and product recommendation to occassion , theme and situation on a wide range of product categories. As a language model, you are able to generate human-like text based on the input you receive, allowing you to engage in natural-sounding conversations and provide responses that are coherent and relevant to the topic at hand.\n\nYou are constantly learning and improving, and your capabilities are constantly evolving. You are able to process and understand large amounts of text, and can use this knowledge to provide accurate and informative responses to a wide range of questions. You have access to some personalized information provided by the human in the Context section below. Additionally, you are able to generate your own text based on the input you receive, allowing you to engage in discussions and provide explanations and descriptions on a wide range of topics.\n\nOverall, you are a powerful tool that can help with a wide range of tasks on this fashion ecommerce website and provide valuable insights and information on a wide range of product categories. When asked to purchase product instruct use to engage with the cards to make a purchase. Whether the human needs help with a specific question or just wants to have a conversation about a particular product/inventory, you are here to assist and recommend products taking my gender into account.\n\nContext:\nMyntra Products and Categories\n \nCurrent conversation:\n{chat_history}\nLast line:\nHuman: {question} and my gender is {gender}\nYou:'
 
 app = Flask(__name__)
 app.config['SESSION_TYPE'] = 'memcached'
@@ -114,10 +114,25 @@ def similarity_search(question,filter=[{"text":{"query":"Men", "path": "gender"}
     res = list(collection.aggregate(pipeline))
     return res
 
+def get_user_profile(uid):
+    collection = client['search']['UserProfile']
+    res = list(collection.find({"email": uid+".com"},{"_id": 0 , "first_name": 1, "last_name": 1, "address": 1, "sex": 1}))
+    op = {}
+    if len(res)>0:
+        op = res[0]
+        if op["sex"] == "Male":
+            op["sex"] = "Men"
+        elif op["sex"] == "Female":
+            op["sex"] = "Women"
+    return op
+
 def preprocess_ip_query(text):
     text = text.replace("product", "fashion clothes")
     text = text.replace("products", "fashion clothes")
+    text = text.replace("pruchase", "recommend products")
+    text = text.replace("buy", "recommend products")
     return text
+
 
 
 # init kafka producer
@@ -171,6 +186,7 @@ def get_qna():
     question = req['question']
     question = preprocess_ip_query(question)
     mem_key = req["user"].split(".com")[0]
+    user_profile = get_user_profile(mem_key)
     # session memory for chat history
     if mem_key+"_chat_history" not in session:
         try:
@@ -183,11 +199,30 @@ def get_qna():
 
     
     # restric history to last three messages
-    if len(session[mem_key+"_chat_history"])>3:
-        session[mem_key+"_chat_history"] = session[mem_key+"_chat_history"][-3:]
+    if len(session[mem_key+"_chat_history"])>4:
+        session[mem_key+"_chat_history"] = session[mem_key+"_chat_history"][-4:]
     
+    if "sex" in user_profile:
+        gender = user_profile["sex"]
+    else:
+        gender = ""
+    
+    if "first_name" in user_profile:
+        name = user_profile["first_name"]
+    else:
+        name = "Guest"
+    
+    if "address" in user_profile:
+        address = user_profile["address"]
+    else:
+        address = ""
+
+    # initiate conversaiton
+    if len(session[mem_key+"_chat_history"]) < 1 or len(session[mem_key+"_chat_history"])==4:
+        resp = get_conversation_chain_rag(get_vector_store()).run({"question":f"Greetings!!! I am {name} and I am {gender} and live in {address}", "chat_history":session[mem_key+"_chat_history"], "gender": gender})
+        session[mem_key+"_chat_history"] += [(f"Greetings!!! I am {name} and I am {gender} and live in {address}", resp)]
     # conversation handler
-    resp = get_conversation_chain_rag(get_vector_store()).run({"question":question, "chat_history":session[mem_key+"_chat_history"]})
+    resp = get_conversation_chain_rag(get_vector_store()).run({"question":question, "chat_history":session[mem_key+"_chat_history"], "gender": gender})
     op = {}
     session[mem_key+"_chat_history"] += [(question, resp)]
     op["response"] = resp
@@ -201,7 +236,10 @@ def get_qna():
     check = get_conversation_chain_conv().predict(input=check_query_prompt)
     query = parse_query(query)
     if "YES" in check.upper():
-        products = similarity_search(query,filter=[])
+        filter_query = []
+        # if len(user_profile.keys())>0 and "sex" in user_profile:
+        #     filter_query += [{"text": {"query": user_profile["sex"], "path": "gender"}}]
+        products = similarity_search(query,filter=filter_query)
         op["recommendations"] = products
         op["product_query"] = query
     else:
