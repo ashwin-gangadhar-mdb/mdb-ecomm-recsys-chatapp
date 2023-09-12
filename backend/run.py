@@ -83,14 +83,14 @@ def similarity_search(question,filter=[{"text":{"query":"Men", "path": "gender"}
     }},
     {"$group":{
         "_id": "$title",
-        "id": {"$first": "$title"},
+        "id": {"$first": "$id"},
         "title": {"$first": "$title"},
         "price": {"$first": "$price"},
         "atp": {"$first": "$atp"},
         "baseColour": {"$addToSet": "$baseColour"},
         "gender": {"$addToSet": "$gender"},
         "mfg_brand_name": {"$first": "$mfg_brand_name"},
-        "link": {"$addToSet": "$link"},
+        "link": {"$first": "$link"},
         "articleType": {"$first": "$articleType"},
         "score": {"$avg": "$score"}
     }},
@@ -107,6 +107,7 @@ def similarity_search(question,filter=[{"text":{"query":"Men", "path": "gender"}
     op = []
     for k in buckets.keys():
         op += buckets[k][:5]
+    op = sorted(op,key=lambda ele: -1*ele["score"])
     return op
 
 def get_user_profile(uid):
