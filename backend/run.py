@@ -46,7 +46,7 @@ def get_conversation_chain_rag(filter_query):
 
 @lru_cache
 def get_conversation_chain_conv():
-    llm = ChatOpenAI(model='gpt-3.5-turbo', temperature=0.7)
+    llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0.2)
     chain = ConversationChain(llm=llm, memory=ConversationBufferWindowMemory(k=5))
     return chain
 
@@ -173,7 +173,16 @@ def parse_query(val):
         return op
     else:
         return val
-    
+
+@app.route("/check", methods=["GET", "POST"])
+def check_response():
+    req = request.get_json()
+    ip = req["ip"]
+    check_query_prompt = f"This Is AI Bot that categories if the given response from previous stage of LLM as valid response to be transformed through vector embedding and perform a vector search on ecommerce fashion database \n Answer with Yes or No only \n ##Response from LLM: {ip}"
+    print(check_query_prompt)
+    check = get_conversation_chain_conv().predict(input=check_query_prompt)
+    return jsonify({"status": check})
+
 @app.route('/qna', methods=['GET','POST'])
 def get_qna():
     req = request.get_json()
@@ -228,9 +237,10 @@ def get_qna():
         filter_query += [{"text": {"query": user_profile["age_group"], "path": "ageGroup"}}]
 
     # initiate conversaiton
-    if len(session[mem_key+"_chat_history"]) < 1 or len(session[mem_key+"_chat_history"])==4:
-        resp = get_conversation_chain_rag(filter_query).run({"question":f"Greetings!!! I am {name} and I am {gender} and live in {address}", "chat_history":session[mem_key+"_chat_history"]})
-        session[mem_key+"_chat_history"] += [(f"Greetings!!! I am {name} and I am looking for {gender}s products to purchase and live in {address}", resp)]
+    if len(session[mem_key+"_chat_history"]) < 1:
+        question = f"User profile Context to use to response : Greetings!!! I am {name} and I am {gender} and live in {address} \n ##User: {question} \n ## AI Assistant:"
+        # resp = get_conversation_chain_rag(filter_query).run({"question":f"Greetings!!! I am {name} and I am {gender} and live in {address}", "chat_history":session[mem_key+"_chat_history"]})
+        # session[mem_key+"_chat_history"] += [(f"Greetings!!! I am {name} and I am looking for {gender}s products to purchase and live in {address}", resp)]
     
     # conversation handler 
     lllm = get_conversation_chain_rag(filter_query)
@@ -241,9 +251,9 @@ def get_qna():
     op["history"] = session[mem_key+"_chat_history"]
 
     # Ecomm query generator for recommendations   
-    check_query_prompt = f"Given the response from the LLM from previous stage. Can we use this reponse to query The search engine. Answer with Yes or No only \n ##Response from LLM: {resp}"
-    check = get_conversation_chain_conv().predict(input=check_query_prompt, history=op["history"]) # .predict({"input":check_query_prompt, "history":[]})
     query = parse_query(resp)
+    check_query_prompt = f"Given the response from the LLM from previous stage. Can we use this reponse to query The search engine. Answer with Yes or No only \n ##Response from LLM: {query}"
+    check = get_conversation_chain_conv().predict(input=check_query_prompt, history=op["history"]) # .predict({"input":check_query_prompt, "history":[]})    
     print("Result of the LLM check for recommendations",check)
     if "YES" in check.upper():
         products = similarity_search(query,filter=filter_query)
