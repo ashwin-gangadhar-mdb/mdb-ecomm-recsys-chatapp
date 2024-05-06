@@ -5,11 +5,12 @@ from flask_cors import CORS
 from kafka import KafkaProducer
 from pymongo import MongoClient
 
-from langchain.chat_models import ChatOpenAI
-from langchain.embeddings.openai import OpenAIEmbeddings
-from langchain.vectorstores import MongoDBAtlasVectorSearch
-from langchain.memory import ConversationBufferWindowMemory,ConversationSummaryBufferMemory
-from langchain.chains import  ConversationalRetrievalChain, ConversationChain,LLMChain
+from langchain_community.chat_models import ChatOpenAI
+from langchain_community.embeddings.openai import OpenAIEmbeddings
+from langchain_mongodb.vectorstores import MongoDBAtlasVectorSearch
+from langchain.memory import ConversationSummaryMemory, ChatMessageHistory
+
+from reco_util import get_product_reco_status, get_product_recommendations, similarity_search, get_conversation_chain_conv
 
 from functools import lru_cache
 import certifi
@@ -25,6 +26,11 @@ client = MongoClient(os.getenv("MDB_CONNECTION_STR"), tlsCAFile=certifi.where())
 db = client["search"]
 col = client['sample']['kafkatest']
 
+
+def summarize(chat_history: str):
+    llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0.2)
+
+
 @lru_cache
 def get_openai_emb_transformers():
     embeddings = OpenAIEmbeddings()
@@ -33,82 +39,8 @@ def get_openai_emb_transformers():
 @lru_cache
 def get_vector_store():
     col = db["catalog_final_myn"]
-    vs = MongoDBAtlasVectorSearch(collection=col,embedding=get_openai_emb_transformers(),index_name="default",embedding_key="openAIVec", text_key="title")
+    vs = MongoDBAtlasVectorSearch(collection=col,embedding=get_openai_emb_transformers(),index_name="vector_index",embedding_key="openAIVec", text_key="title")
     return vs
-
-
-def get_conversation_chain_rag(filter_query):
-    llm = ChatOpenAI(model='gpt-3.5-turbo', temperature=0.7)
-    retriever = get_vector_store().as_retriever(search_type='similarity', search_kwargs={'k': 200, "pre_filter" : {"compound": {"must": filter_query}}})
-    memory = ConversationBufferWindowMemory(memory_key="chat_history", k=5)
-    qa_chain = ConversationalRetrievalChain.from_llm(llm=llm, retriever=retriever, memory=memory)
-    return qa_chain
-
-@lru_cache
-def get_conversation_chain_conv():
-    llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0.2)
-    chain = ConversationChain(llm=llm, memory=ConversationBufferWindowMemory(k=5))
-    return chain
-
-def similarity_search(question,filter=[{"text":{"query":"Men", "path": "gender"}}],k=200):
-    collection = client['search']['catalog_final_myn']
-    query_vector = get_openai_emb_transformers().embed_query(question)
-    knnBeta = {
-      "vector": query_vector,
-      "path": "openAIVec",
-      "k": k
-    }
-    if len(filter)>0:
-        compound = {}
-        compound["must"] = []
-        for fil in filter:
-            compound["must"]  += [fil]
-        knnBeta["filter"] = {"compound": compound}
-        knnBeta["filter"] = {"compound": compound}
-    pipeline = [{
-    "$search": {
-    "index": "default",
-    "knnBeta": knnBeta
-    }
-    },
-    {"$addFields":{
-    "score":{
-        '$meta': 'searchScore'
-        }
-    }},
-    {"$match":{
-      "score":{
-          "$gt":0.8
-      }
-    }},
-    {"$group":{
-        "_id": "$title",
-        "id": {"$first": "$id"},
-        "title": {"$first": "$title"},
-        "price": {"$first": "$price"},
-        "atp": {"$first": "$atp"},
-        "baseColour": {"$addToSet": "$baseColour"},
-        "gender": {"$addToSet": "$gender"},
-        "mfg_brand_name": {"$first": "$mfg_brand_name"},
-        "link": {"$first": "$link"},
-        "articleType": {"$first": "$articleType"},
-        "score": {"$avg": "$score"}
-    }},
-    {"$sort": {"score": -1}},
-    {"$project":{"_id": 0}}]
-    res = list(collection.aggregate(pipeline))
-    buckets = {}
-    for ele in res:
-        if ele["articleType"] in buckets:
-            buckets[ele["articleType"]] += [ele]
-        else:
-            buckets[ele["articleType"]] = [ele]
-    counter = {}
-    op = []
-    for k in buckets.keys():
-        op += buckets[k][:5]
-    op = sorted(op,key=lambda ele: -1*ele["score"])
-    return op
 
 def get_user_profile(uid):
     collection = client['search']['UserProfile']
@@ -159,27 +91,23 @@ def get_similar():
     q = req["query"]
     return jsonify(similarity_search(q,filter=[]))
 
-def parse_query(val):
-    op = ""
-    foo = []
-    if len(val.split("\n")[1:-1])>1:
-        foo = val.split("\n")[1:-1]
-    elif len(val.split(",")[1:-1])>1:
-        foo = val.split(",")[1:-1]
-    if len(foo)>0:
-        for i,ele in enumerate(foo):
-            if ele !="":
-                op += " "+ele.replace(str(i)+".","").strip()
-        return op
-    else:
-        return val
+def get_sorted_results(product_recommendations):
+    all_titles = [rec['title'] for rec in product_recommendations['products']]
+    col = db["catalog_final_myn"]
+    results = list(col.find({"title": {"$in":all_titles}}, {"_id": 0 , "id":1, "title": 1, "price": 1, "baseColour": 1, "articleType": 1, "gender": 1, "link" : 1, "mfg_brand_name": 1}))
+    sorted_results = []
+    for title in all_titles:
+        for result in results:
+            if result['title'] == title:
+                sorted_results.append(result)
+                break
+    return sorted_results
 
 @app.route("/check", methods=["GET", "POST"])
 def check_response():
     req = request.get_json()
     ip = req["ip"]
     check_query_prompt = f"This Is AI Bot that categories if the given response from previous stage of LLM as valid response to be transformed through vector embedding and perform a vector search on ecommerce fashion database \n Answer with Yes or No only \n ##Response from LLM: {ip}"
-    print(check_query_prompt)
     check = get_conversation_chain_conv().predict(input=check_query_prompt)
     return jsonify({"status": check})
 
@@ -213,7 +141,7 @@ def get_qna():
     # restric history to last three messages
     if len(session[mem_key+"_chat_history"])>4:
         session[mem_key+"_chat_history"] = session[mem_key+"_chat_history"][-4:]
-    
+
     if "sex" in user_profile:
         gender = user_profile["sex"]
     else:
@@ -229,12 +157,12 @@ def get_qna():
     else:
         address = ""
 
-    # prepare user profile filter query
-    filter_query = []
+    # prepare user profile filter query in new vector search format
+    filter_query_new = []
     if len(user_profile.keys())>0 and "sex" in user_profile:
-        filter_query += [{"text": {"query": user_profile["sex"], "path": "gender"}}]
+        filter_query_new += [{"gender": user_profile["sex"]}]
     if len(user_profile.keys())>0 and "age_group" in user_profile:
-        filter_query += [{"text": {"query": user_profile["age_group"], "path": "ageGroup"}}]
+        filter_query_new += [{"ageGroup": user_profile["age_group"]}]
 
     # initiate conversaiton
     if len(session[mem_key+"_chat_history"]) < 1:
@@ -242,25 +170,38 @@ def get_qna():
         # resp = get_conversation_chain_rag(filter_query).run({"question":f"Greetings!!! I am {name} and I am {gender} and live in {address}", "chat_history":session[mem_key+"_chat_history"]})
         # session[mem_key+"_chat_history"] += [(f"Greetings!!! I am {name} and I am looking for {gender}s products to purchase and live in {address}", resp)]
     
-    # conversation handler 
-    lllm = get_conversation_chain_rag(filter_query)
-    resp = lllm.run({"question":question, "chat_history":session[mem_key+"_chat_history"]})
-    op = {}
-    session[mem_key+"_chat_history"] += [(question, resp)]
-    op["response"] = resp
-    op["history"] = session[mem_key+"_chat_history"]
 
-    # Ecomm query generator for recommendations   
-    query = parse_query(resp)
-    check_query_prompt = f"Given the response from the LLM from previous stage. Can we use this reponse to query The search engine. Answer with Yes or No only \n ##Response from LLM: {query}"
-    check = get_conversation_chain_conv().predict(input=check_query_prompt, history=op["history"]) # .predict({"input":check_query_prompt, "history":[]})    
-    print("Result of the LLM check for recommendations",check)
-    if "YES" in check.upper():
-        products = similarity_search(query,filter=filter_query)
+    # conversation handler 
+    llm = get_conversation_chain_conv()
+
+    history = ChatMessageHistory()
+    for message in session[mem_key+"_chat_history"]:
+        history.add_user_message(message[0])
+        history.add_ai_message(message[1])
+    memory = ConversationSummaryMemory.from_messages(
+        llm=llm,
+        chat_memory=history,
+        return_messages=True
+    )
+
+    status = get_product_reco_status(question, memory.buffer)
+    op = {}
+    if status['relevancy_status']:
+        product_recommendations = get_product_recommendations(question, memory.buffer, filter_query_new,\
+                                     reco_queries=status["recommendations"])
+
+        
+        session[mem_key+"_chat_history"] += [(question, product_recommendations['message'])]
+        op["response"] = product_recommendations['message']
+        sorted_results = get_sorted_results(product_recommendations)
+        products = sorted_results
         op["recommendations"] = products
-        op["product_query"] = query
+        op["product_query"] = status["recommendations"]
     else:
-        op["product_query"] = query
+        response = llm.invoke(question)
+        op["response"] = response.content
+        
+    # op["history"] = session[mem_key+"_chat_history"]
     return jsonify(op)
 
 @app.route('/clear/session', methods=['DELETE'])
